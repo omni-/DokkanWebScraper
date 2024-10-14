@@ -17,6 +17,7 @@ export interface Character {
     ezaUltraSuperAttack?: string,
     passive: string,
     ezaPassive?: string,
+	superEzaPassive?: string,
     activeSkill?: string,
     activeSkillCondition?: string,
     ezaActiveSkill?: string,

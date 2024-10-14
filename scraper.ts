@@ -9,10 +9,10 @@ export async function getDokkanData(rarity: string) {
 
     const charactersData = await Promise.all(links.map(async link => {
         const characterDocument: Document = await fetchFromWeb(link)
-        return extractCharacterData(characterDocument)
+        return extractCharacterData(characterDocument);
     }))
 
-    return charactersData
+    return charactersData.filter(x => x)
 }
 
 function fetchPage(url: string): Promise<string | undefined> {
@@ -60,7 +60,8 @@ export function extractCharacterData(characterDocument: Document) {
         ultraSuperAttack: characterDocument.querySelector('[data-image-name="Ultra Super atk.png"]')?.closest('tr')?.nextElementSibling?.textContent ?? undefined,
         ezaUltraSuperAttack: characterDocument.querySelectorAll('table.ezawidth')[1]?.querySelector('[data-image-name="Ultra Super atk.png"]')?.closest('tr')?.nextElementSibling?.textContent ?? undefined,
         passive: characterDocument.querySelector('[data-image-name="Passive skill.png"]')?.closest('tr')?.nextElementSibling?.textContent ?? 'Error',
-        ezaPassive: characterDocument.querySelectorAll('table.ezawidth')[1]?.querySelector('[data-image-name="Passive skill.png"]')?.closest('tr')?.nextElementSibling?.textContent ?? undefined,
+        ezaPassive: (characterDocument.querySelectorAll('table.ezawidth')[1]?.querySelector('[data-image-name="Passive skill.png"]')?.closest('tr')?.nextElementSibling?.textContent || characterDocument.querySelectorAll('table.ezawidth')[1]?.querySelector('center:nth-child(2)')?.textContent) ?? undefined,
+		superEzaPassive: characterDocument.querySelectorAll('table.ezawidth')[1]?.querySelector('center:nth-child(2)')?.parentElement?.nextElementSibling?.textContent ?? undefined,
         activeSkill: (characterDocument.querySelector('[data-image-name="Active skill.png"]')?.closest('tr')?.nextElementSibling?.textContent || characterDocument.querySelector('[data-image-name="Active skill.png"]')?.closest('tr')?.nextElementSibling?.nextElementSibling?.textContent) ?? undefined,
         activeSkillCondition: characterDocument.querySelector('[data-image-name="Active skill.png"]')?.closest('tr')?.nextElementSibling?.nextElementSibling?.nextElementSibling?.querySelector('td > center')?.textContent ?? undefined,
         ezaActiveSkill: characterDocument.querySelectorAll('table.ezawidth')[1]?.querySelector('[data-image-name="Active skill.png"]')?.closest('tr')?.nextElementSibling?.textContent ?? undefined,
@@ -84,6 +85,7 @@ export function extractCharacterData(characterDocument: Document) {
         kiMultiplier: (characterDocument.querySelector('.righttablecard > table:nth-child(6) > tbody:nth-child(1) > tr:nth-child(2) > td:nth-child(1)')?.innerHTML.split('► ')[1].split('<br>')[0].concat('; ', characterDocument.querySelector('.righttablecard > table:nth-child(6) > tbody:nth-child(1) > tr:nth-child(2) > td:nth-child(1)')?.innerHTML.split('<br>► ')[1] ?? '').replace('<a href="/wiki/Super_Attack_Multipliers" title="Super Attack Multipliers">SA Multiplier</a>', 'SA Multiplier') ?? characterDocument.querySelector('.righttablecard')?.nextElementSibling?.querySelector('tr:nth-child(2) > td')?.textContent?.split('► ')[1]) ?? 'Error',
         transformations: transformedCharacterData
     }
+
     return characterData
 }
 
@@ -114,3 +116,18 @@ function extractTransformedCharacterData(characterDocument: Document): Transform
     return transformedArray
 }
 
+export async function getURCharacterPages() {
+    let baseUrl = 'https://dbz-dokkanbattle.fandom.com/wiki/Category:';
+    let document: Document = await fetchFromWeb(baseUrl + 'UR');
+    let ret: string[] = ['UR'];
+    while (true) {
+        let button = Array.from(document.querySelectorAll('.category-page__pagination a.wds-button')).find(x => x.innerHTML.includes('<span>Next</span>'));
+        if (button == null) {
+            break;
+        }
+        let link: string = button.getAttribute('href')?.split(':')[2];
+        ret.push(link)
+        document = await fetchFromWeb(baseUrl + link)
+    }
+    return ret;
+}

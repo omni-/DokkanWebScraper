@@ -1,21 +1,24 @@
 import { existsSync, mkdirSync } from "fs";
 import { writeFile } from "fs/promises";
 import { resolve } from "path";
-import { getDokkanData } from "./scraper";
+import { getDokkanData, getURCharacterPages } from "./scraper";
 
 export async function saveDokkanResults() {
     console.log('Starting scrape');
-    const URData = await getDokkanData('UR');
-    console.log('First set done');
-    const URData2 = await getDokkanData('UR?from=Evil+Pride+Frieza+(Final+Form)+(Angel)');
-    console.log('Second set done');
-    const URData3 = await getDokkanData('UR?from=Next-Level+Strike+Super+Saiyan+God+SS+Goku');
-    console.log('Third set done');
-    const URData4 = await getDokkanData('UR?from=Training+and+Refreshment+Goku');
-    console.log('Forth set done');
+
+    const sections = await getURCharacterPages();
+    let results = [];
+    let i = 0;
+    for (i = 0; i < sections.length; i++) {
+        console.log("Fetching UR page " + (i + 1));
+        let data = await getDokkanData(sections[i]);
+        results.push(data);
+    }
+    console.log("Fetching LRs");
     const LRData = await getDokkanData('LR');
+
     console.log('Finished scrape, saving data');
-    let data = LRData.concat(URData, URData2, URData3, URData4);
+    let data = LRData.concat(results.flat());
     let currentDate = new Date();
     let day = ("0" + currentDate.getUTCDate()).slice(-2);
     let month = ("0" + currentDate.getUTCMonth() + 1).slice(-2);
