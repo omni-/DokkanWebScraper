@@ -39,8 +39,40 @@ function extractLinks(document: Document) {
     return URIs.map(link => 'https://dbz-dokkanbattle.fandom.com'.concat(link.href))
 }
 
+function isValidHttpUrl(value: string) {
+  let url;
+  
+  try {
+    url = new URL(value);
+  } catch (_) { //yikes
+    return false;  
+  }
+
+  return url.protocol === "http:" || url.protocol === "https:";
+}
+
 export function extractCharacterData(characterDocument: Document) {
+	const awakenArrow = characterDocument.querySelector('.mw-parser-output')?.querySelector('img[alt="Arrow"]');
+	// dont need these
+	if (awakenArrow != null) {
+		return null;
+	}
+	
     const transformedCharacterData: Transformation[] = extractTransformedCharacterData(characterDocument);
+	
+	// handle new funky wiki format (that only gets used Sometimes)... yuck.
+	let url = "";
+	let imageSelector = 'body .mw-parser-output > .tabber.wds-tabber';
+	if (characterDocument.querySelectorAll(imageSelector).length < 1) {
+		imageSelector = 'body .mw-parser-output';
+	}
+	const primary = characterDocument.querySelector(imageSelector)?.querySelector('table > tbody > tr > td > a')?.getAttribute('href');
+	const backup = characterDocument.querySelector(imageSelector)?.querySelector('table > tbody > tr > td > div > img')?.getAttribute('src');
+	if (isValidHttpUrl(primary) && !primary.includes('sp_phrase')) { // costume characters have very similar looking images higher up than others
+		url = primary;
+	} else {
+		url = backup
+	}
 
     const characterData: Character = {
         name: characterDocument.querySelector('.mw-parser-output')?.querySelector('table > tbody > tr > td:nth-child(2)')?.innerHTML.split('<br>')[1].split('</b>')[0].replaceAll('&amp;', '&') ?? 'Error',
@@ -52,7 +84,7 @@ export function extractCharacterData(characterDocument: Document) {
         type: Types[characterDocument.querySelector('.mw-parser-output')?.querySelector('table > tbody > tr:nth-child(3) > td:nth-child(4) > center:nth-child(1) > a:nth-child(1)')?.getAttribute('title')?.split(' ')[1] ?? 'Error'],
         cost: parseInt((characterDocument.querySelector('.mw-parser-output')?.querySelector('table > tbody > tr:nth-child(3) > td:nth-child(5) > center:nth-child(1)')?.textContent) ?? 'Error'),
         id: characterDocument.querySelector('.mw-parser-output')?.querySelector('table > tbody > tr:nth-child(3) > td:nth-child(6) > center:nth-child(1)')?.textContent ?? 'Error',
-        imageURL: (characterDocument.querySelector('.mw-parser-output')?.querySelector('table > tbody > tr > td > div > img')?.getAttribute('src') || characterDocument.querySelector('.mw-parser-output')?.querySelector('table > tbody > tr > td > a')?.getAttribute('href')) ?? 'Error',
+        imageURL: url ?? 'Error',
         leaderSkill: characterDocument.querySelector('[data-image-name="Leader Skill.png"]')?.closest('tr')?.nextElementSibling?.textContent ?? 'Error',
         ezaLeaderSkill: characterDocument.querySelector('.ezatabber > div > div:nth-child(3) > table > tbody > tr:nth-child(2) > td')?.textContent ?? undefined,
         superAttack: characterDocument.querySelector('[data-image-name="Super atk.png"]')?.closest('tr')?.nextElementSibling?.textContent ?? 'Error',
