@@ -25,7 +25,6 @@ export interface Character {
     transformationCondition?: string,
     links: string[],
     categories: string[],
-    kiMeter: string[],
     baseHP: number,
     maxLevelHP: number,
     freeDupeHP: number,
