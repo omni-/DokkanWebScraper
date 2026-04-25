@@ -9,10 +9,10 @@ export async function getDokkanData(rarity: string) {
 
     const charactersData = await Promise.all(links.map(async link => {
         const characterDocument: Document = await fetchFromWeb(link)
-        return extractCharacterData(characterDocument)
+        return extractCharacterData(characterDocument);
     }))
 
-    return charactersData
+    return charactersData.filter(x => x)
 }
 
 function fetchPage(url: string): Promise<string | undefined> {
@@ -39,8 +39,44 @@ function extractLinks(document: Document) {
     return URIs.map(link => 'https://dbz-dokkanbattle.fandom.com'.concat(link.href))
 }
 
+function isValidHttpUrl(value: string) {
+  let url;
+  
+  try {
+    url = new URL(value);
+  } catch (_) { //yikes
+    return false;  
+  }
+
+  return url.protocol === "http:" || url.protocol === "https:";
+}
+
 export function extractCharacterData(characterDocument: Document) {
+	const awakenArrow = characterDocument.querySelector('.mw-parser-output')?.querySelector('img[alt="Arrow"]');
+	// dont need these
+	if (awakenArrow != null) {
+		return null;
+	}
+	
     const transformedCharacterData: Transformation[] = extractTransformedCharacterData(characterDocument);
+	
+	// handle new funky wiki format (that only gets used Sometimes)... yuck.
+	let url = "";
+	let imageSelector = 'body .mw-parser-output > .tabber.wds-tabber';
+	if (characterDocument.querySelectorAll(imageSelector).length < 1) {
+		imageSelector = 'body .mw-parser-output';
+	}
+	const primary = characterDocument.querySelector(imageSelector)?.querySelector('table > tbody > tr > td > span > a')?.getAttribute('href');
+    const backup = characterDocument.querySelector(imageSelector)?.querySelector('table > tbody > tr > td > div > img')?.getAttribute('src');
+	if (isValidHttpUrl(primary) && !primary.includes('sp_phrase')) { // costume characters have very similar looking images higher up than others
+		url = primary;
+	} else {
+		url = backup
+    }
+
+    if (!url) { // i dont even know what theyre doing anymore. i need a new solution for this.
+        url = characterDocument.querySelector(imageSelector)?.querySelector('table > tbody > tr > td > div > span > img')?.getAttribute('src');;
+    }
 
     const characterData: Character = {
         name: characterDocument.querySelector('.mw-parser-output')?.querySelector('table > tbody > tr > td:nth-child(2)')?.innerHTML.split('<br>')[1].split('</b>')[0].replaceAll('&amp;', '&') ?? 'Error',
@@ -48,11 +84,11 @@ export function extractCharacterData(characterDocument: Document) {
         maxLevel: parseInt((characterDocument.querySelector('.mw-parser-output')?.querySelector('table > tbody > tr:nth-child(3) > td')?.textContent?.split('/')[1] || characterDocument.querySelector('.mw-parser-output')?.querySelector('table > tbody > tr:nth-child(3) > td')?.textContent?.split('/')[0]) ?? 'Error'),
         maxSALevel: parseInt((characterDocument.querySelector('.mw-parser-output')?.querySelector('table > tbody > tr:nth-child(3) > td:nth-child(2) > center')?.innerHTML.split('>/')[1]) ?? ' Error'),
         rarity: Rarities[characterDocument.querySelector('.mw-parser-output')?.querySelector('table > tbody > tr:nth-child(3) > td:nth-child(3) > center')?.querySelector('a')?.getAttribute('title')?.split('Category:')[1] ?? 'Error'],
-        class: Classes[characterDocument.querySelector('.mw-parser-output')?.querySelector('table > tbody > tr:nth-child(3) > td:nth-child(4) > center:nth-child(1) > a:nth-child(1)')?.getAttribute('title')?.split(' ')[0].split('Category:')[1] ?? 'Error'],
-        type: Types[characterDocument.querySelector('.mw-parser-output')?.querySelector('table > tbody > tr:nth-child(3) > td:nth-child(4) > center:nth-child(1) > a:nth-child(1)')?.getAttribute('title')?.split(' ')[1] ?? 'Error'],
+        class: Classes[characterDocument.querySelector('.mw-parser-output')?.querySelector('table > tbody > tr:nth-child(3) > td:nth-child(4) > center:nth-child(1) > span > a:nth-child(1)')?.getAttribute('title')?.split(' ')[0].split('Category:')[1] ?? 'Error'],
+        type: Types[characterDocument.querySelector('.mw-parser-output')?.querySelector('table > tbody > tr:nth-child(3) > td:nth-child(4) > center:nth-child(1) > span > a:nth-child(1)')?.getAttribute('title')?.split(' ')[1] ?? 'Error'],
         cost: parseInt((characterDocument.querySelector('.mw-parser-output')?.querySelector('table > tbody > tr:nth-child(3) > td:nth-child(5) > center:nth-child(1)')?.textContent) ?? 'Error'),
         id: characterDocument.querySelector('.mw-parser-output')?.querySelector('table > tbody > tr:nth-child(3) > td:nth-child(6) > center:nth-child(1)')?.textContent ?? 'Error',
-        imageURL: (characterDocument.querySelector('.mw-parser-output')?.querySelector('table > tbody > tr > td > div > img')?.getAttribute('src') || characterDocument.querySelector('.mw-parser-output')?.querySelector('table > tbody > tr > td > a')?.getAttribute('href')) ?? 'Error',
+        imageURL: url ?? 'Error',
         leaderSkill: characterDocument.querySelector('[data-image-name="Leader Skill.png"]')?.closest('tr')?.nextElementSibling?.textContent ?? 'Error',
         ezaLeaderSkill: characterDocument.querySelector('.ezatabber > div > div:nth-child(3) > table > tbody > tr:nth-child(2) > td')?.textContent ?? undefined,
         superAttack: characterDocument.querySelector('[data-image-name="Super atk.png"]')?.closest('tr')?.nextElementSibling?.textContent ?? 'Error',
@@ -60,7 +96,8 @@ export function extractCharacterData(characterDocument: Document) {
         ultraSuperAttack: characterDocument.querySelector('[data-image-name="Ultra Super atk.png"]')?.closest('tr')?.nextElementSibling?.textContent ?? undefined,
         ezaUltraSuperAttack: characterDocument.querySelectorAll('table.ezawidth')[1]?.querySelector('[data-image-name="Ultra Super atk.png"]')?.closest('tr')?.nextElementSibling?.textContent ?? undefined,
         passive: characterDocument.querySelector('[data-image-name="Passive skill.png"]')?.closest('tr')?.nextElementSibling?.textContent ?? 'Error',
-        ezaPassive: characterDocument.querySelectorAll('table.ezawidth')[1]?.querySelector('[data-image-name="Passive skill.png"]')?.closest('tr')?.nextElementSibling?.textContent ?? undefined,
+        ezaPassive: (characterDocument.querySelectorAll('table.ezawidth')[1]?.querySelector('[data-image-name="Passive skill.png"]')?.closest('tr')?.nextElementSibling?.textContent || characterDocument.querySelectorAll('table.ezawidth')[1]?.querySelector('center:nth-child(2)')?.textContent) ?? undefined,
+		superEzaPassive: characterDocument.querySelectorAll('table.ezawidth')[1]?.querySelector('center:nth-child(2)')?.parentElement?.nextElementSibling?.textContent ?? undefined,
         activeSkill: (characterDocument.querySelector('[data-image-name="Active skill.png"]')?.closest('tr')?.nextElementSibling?.textContent || characterDocument.querySelector('[data-image-name="Active skill.png"]')?.closest('tr')?.nextElementSibling?.nextElementSibling?.textContent) ?? undefined,
         activeSkillCondition: characterDocument.querySelector('[data-image-name="Active skill.png"]')?.closest('tr')?.nextElementSibling?.nextElementSibling?.nextElementSibling?.querySelector('td > center')?.textContent ?? undefined,
         ezaActiveSkill: characterDocument.querySelectorAll('table.ezawidth')[1]?.querySelector('[data-image-name="Active skill.png"]')?.closest('tr')?.nextElementSibling?.textContent ?? undefined,
@@ -68,7 +105,7 @@ export function extractCharacterData(characterDocument: Document) {
         transformationCondition: characterDocument.querySelector('[data-image-name="Transformation Condition.png"]')?.closest('tr')?.nextElementSibling?.querySelector('td > center')?.textContent ?? undefined,
         links: Array.from(characterDocument.querySelector('[data-image-name="Link skill.png"]')?.closest('tr')?.nextElementSibling?.querySelectorAll('span > a') ?? []).map(link => link.textContent ?? 'Error'),
         categories: Array.from(characterDocument.querySelector('[data-image-name="Category.png"]')?.closest('tr')?.nextElementSibling?.querySelectorAll('a') ?? []).map(link => link.textContent ?? 'Error'),
-        kiMeter: Array.from(characterDocument.querySelector('[data-image-name="Ki meter.png"]')?.closest('tbody')?.querySelectorAll('img') ?? []).map(kiMeter => kiMeter.getAttribute('alt')?.split('.png')[0] ?? 'Error').slice(1),
+        //kiMeter: Array.from(characterDocument.querySelector('[data-image-name="Ki meter.png"]')?.closest('tbody')?.querySelectorAll('img') ?? []).map(kiMeter => kiMeter.getAttribute('alt')?.split('.png')[0] ?? 'Error').slice(1),
         baseHP: parseInt(characterDocument.querySelector('.righttablecard > table:nth-child(3) > tbody:nth-child(1) > tr:nth-child(2) > td:nth-child(2) > center:nth-child(1)')?.textContent ?? 'Error'),
         maxLevelHP: parseInt(characterDocument.querySelector('.righttablecard > table:nth-child(3) > tbody:nth-child(1) > tr:nth-child(2) > td:nth-child(3) > center:nth-child(1)')?.textContent ?? 'Error'),
         freeDupeHP: parseInt(characterDocument.querySelector('.righttablecard > table:nth-child(3) > tbody:nth-child(1) > tr:nth-child(2) > td:nth-child(4) > center:nth-child(1)')?.textContent ?? 'Error'),
@@ -84,6 +121,7 @@ export function extractCharacterData(characterDocument: Document) {
         kiMultiplier: (characterDocument.querySelector('.righttablecard > table:nth-child(6) > tbody:nth-child(1) > tr:nth-child(2) > td:nth-child(1)')?.innerHTML.split('► ')[1].split('<br>')[0].concat('; ', characterDocument.querySelector('.righttablecard > table:nth-child(6) > tbody:nth-child(1) > tr:nth-child(2) > td:nth-child(1)')?.innerHTML.split('<br>► ')[1] ?? '').replace('<a href="/wiki/Super_Attack_Multipliers" title="Super Attack Multipliers">SA Multiplier</a>', 'SA Multiplier') ?? characterDocument.querySelector('.righttablecard')?.nextElementSibling?.querySelector('tr:nth-child(2) > td')?.textContent?.split('► ')[1]) ?? 'Error',
         transformations: transformedCharacterData
     }
+
     return characterData
 }
 
@@ -114,3 +152,18 @@ function extractTransformedCharacterData(characterDocument: Document): Transform
     return transformedArray
 }
 
+export async function getURCharacterPages() {
+    let baseUrl = 'https://dbz-dokkanbattle.fandom.com/wiki/Category:';
+    let document: Document = await fetchFromWeb(baseUrl + 'UR');
+    let ret: string[] = ['UR'];
+    while (true) {
+        let button = Array.from(document.querySelectorAll('.category-page__pagination a.wds-button')).find(x => x.innerHTML.includes('<span>Next</span>'));
+        if (button == null) {
+            break;
+        }
+        let link: string = button.getAttribute('href')?.split(':')[2];
+        ret.push(link)
+        document = await fetchFromWeb(baseUrl + link)
+    }
+    return ret;
+}
