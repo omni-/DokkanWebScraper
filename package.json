@@ -12,7 +12,8 @@
     "watch": "tsc -w",
     "prestart": "npm run build",
     "test": "mocha",
-    "run": "npx ts-node index.ts"
+    "run": "npx ts-node index.ts",
+    "run:dokkanstats": "npx ts-node dokkanstats.ts"
   },
   "repository": {
     "type": "git",
