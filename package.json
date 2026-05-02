@@ -12,7 +12,8 @@
     "watch": "tsc -w",
     "prestart": "npm run build",
     "test": "mocha",
-    "run": "npx ts-node index.ts"
+    "run": "npx ts-node index.ts",
+    "run:dokkanstats": "npx ts-node dokkanstats.ts"
   },
   "repository": {
     "type": "git",
@@ -21,6 +22,7 @@
   "dependencies": {
     "axios": "^0.27.2",
     "jsdom": "^20.0.0",
+    "playwright": "^1.59.1",
     "ts-node": "^10.9.1"
   },
   "devDependencies": {

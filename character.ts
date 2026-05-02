@@ -6,8 +6,8 @@ export interface Character {
     rarity: Rarities,
     class: Classes,
     type: Types,
-    cost: number,
-    id: string,
+    cost?: number,
+    id: string | number,
     imageURL: string,
     leaderSkill: string,
     ezaLeaderSkill?: string,
@@ -60,7 +60,7 @@ export enum Rarities {
 }
 
 export interface Transformation {
-    transformedID: string,
+    transformedID: string | number,
     transformedName: string,
     transformedClass: Classes,
     transformedType: Types,
