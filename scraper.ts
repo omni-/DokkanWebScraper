@@ -4,7 +4,7 @@ import { Character, Rarities, Classes, Types, Transformation } from "./character
 
 const BASE_URL = 'https://dbz-dokkanbattle.fandom.com';
 const CATEGORY_URL = `${BASE_URL}/wiki/Category:`;
-const MAX_BROWSER_CONCURRENCY = 4;
+const MAX_BROWSER_CONCURRENCY = parseInt(process.env.DOKKAN_CONCURRENCY ?? '4', 10);
 const BROWSER_WAIT_TIMEOUT_MS = parseInt(process.env.DOKKAN_BROWSER_TIMEOUT_MS ?? '60000', 10);
 const CHALLENGE_POLL_INTERVAL_MS = 1000;
 const VERBOSE_LOGGING = process.env.DOKKAN_VERBOSE === '1';
@@ -20,12 +20,16 @@ interface BrowserStrategy {
 }
 
 interface BrowserFetcher {
+    activePageCount: number;
     browser: any;
     context: any;
+    isClosed: boolean;
+    isRetired: boolean;
     strategy: BrowserStrategy;
 }
 
 let browserFetcherPromise: Promise<BrowserFetcher> | undefined;
+let currentBrowserFetcher: BrowserFetcher | undefined;
 let activeBrowserStrategyIndex = 0;
 
 function logVerbose(message: string) {
@@ -71,8 +75,9 @@ async function mapWithConcurrency<T, TResult>(
 async function fetchPage(url: string): Promise<string> {
     logVerbose(`HTTP fetch: ${url}`);
     try {
+        const headers = await buildRequestHeaders(url);
         const response = await axios.get(url, {
-            headers: BROWSER_HEADERS,
+            headers,
         });
 
         if (isCloudflareChallengePage(response.data)) {
@@ -118,13 +123,14 @@ async function fetchPageWithBrowser(url: string) {
         } catch (error) {
             lastError = error;
             logVerbose(`Browser strategy setup failed for ${getBrowserStrategies()[strategyIndex]?.description ?? 'unknown strategy'}: ${error instanceof Error ? error.message : String(error)}`);
-            await resetBrowserFetcher();
             continue;
         }
 
-        const page = await browserFetcher.context.newPage();
+        let page: any;
+        browserFetcher.activePageCount += 1;
 
         try {
+            page = await browserFetcher.context.newPage();
             logVerbose(`Browser fetch with ${browserFetcher.strategy.description}: ${url}`);
             await page.goto(url, { waitUntil: 'domcontentloaded', timeout: BROWSER_WAIT_TIMEOUT_MS });
             await waitForRealContent(page, browserFetcher.strategy.description);
@@ -134,9 +140,14 @@ async function fetchPageWithBrowser(url: string) {
         } catch (error) {
             lastError = error;
             logVerbose(`Browser fetch failed with ${browserFetcher.strategy.description}: ${url} (${error instanceof Error ? error.message : String(error)})`);
-            await resetBrowserFetcher();
+            await retireBrowserFetcher(browserFetcher);
         } finally {
-            await page.close();
+            if (page) {
+                await page.close().catch(() => undefined);
+            }
+
+            browserFetcher.activePageCount -= 1;
+            await closeRetiredBrowserFetcher(browserFetcher);
         }
     }
 
@@ -154,7 +165,6 @@ async function waitForRealContent(page: any, strategyDescription: string) {
 
     while (Date.now() < deadline) {
         await page.waitForTimeout(CHALLENGE_POLL_INTERVAL_MS);
-        await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => undefined);
 
         const state = await page.evaluate(() => ({
             hasParserOutput: Boolean(document.querySelector('.mw-parser-output')),
@@ -195,6 +205,10 @@ function getBrowserStrategies(): BrowserStrategy[] {
 }
 
 async function getBrowserFetcher(strategyIndex = activeBrowserStrategyIndex) {
+    if (currentBrowserFetcher && !currentBrowserFetcher.isRetired && !currentBrowserFetcher.isClosed) {
+        return currentBrowserFetcher;
+    }
+
     if (!browserFetcherPromise) {
         browserFetcherPromise = createBrowserFetcher(strategyIndex).catch(error => {
             browserFetcherPromise = undefined;
@@ -205,21 +219,37 @@ async function getBrowserFetcher(strategyIndex = activeBrowserStrategyIndex) {
     return browserFetcherPromise;
 }
 
-async function resetBrowserFetcher() {
-    await closeBrowserFetcher();
+async function retireBrowserFetcher(browserFetcher: BrowserFetcher) {
+    browserFetcher.isRetired = true;
+
+    if (currentBrowserFetcher === browserFetcher) {
+        currentBrowserFetcher = undefined;
+        browserFetcherPromise = undefined;
+    }
+
+    await closeRetiredBrowserFetcher(browserFetcher);
 }
 
-export async function closeBrowserFetcher() {
-    if (!browserFetcherPromise) {
+async function closeRetiredBrowserFetcher(browserFetcher: BrowserFetcher) {
+    if (!browserFetcher.isRetired || browserFetcher.isClosed || browserFetcher.activePageCount > 0) {
         return;
     }
 
-    try {
-        const { browser } = await browserFetcherPromise;
-        await browser.close();
-    } finally {
-        browserFetcherPromise = undefined;
+    browserFetcher.isClosed = true;
+    await browserFetcher.browser.close().catch(() => undefined);
+}
+
+export async function closeBrowserFetcher() {
+    const browserFetcher = currentBrowserFetcher ?? await browserFetcherPromise?.catch(() => undefined);
+    currentBrowserFetcher = undefined;
+    browserFetcherPromise = undefined;
+
+    if (!browserFetcher) {
+        return;
     }
+
+    browserFetcher.isRetired = true;
+    await closeRetiredBrowserFetcher(browserFetcher);
 }
 
 async function createBrowserFetcher(strategyIndex: number): Promise<BrowserFetcher> {
@@ -253,16 +283,65 @@ async function createBrowserFetcher(strategyIndex: number): Promise<BrowserFetch
             viewport: { width: 1365, height: 945 },
         });
 
+        await context.route('**/*', (route: any) => {
+            const resourceType = route.request().resourceType();
+            if (resourceType === 'image' || resourceType === 'media' || resourceType === 'font' || resourceType === 'stylesheet') {
+                return route.abort();
+            }
+
+            return route.continue();
+        });
+
         await context.addInitScript(() => {
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
             Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
             Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
         });
 
-        return { browser, context, strategy };
+        const browserFetcher: BrowserFetcher = {
+            activePageCount: 0,
+            browser,
+            context,
+            isClosed: false,
+            isRetired: false,
+            strategy,
+        };
+
+        currentBrowserFetcher = browserFetcher;
+        return browserFetcher;
     } catch (error) {
         logVerbose(`Failed to launch browser strategy ${strategy.description}: ${error instanceof Error ? error.message : String(error)}`);
         throw error;
+    }
+}
+
+async function buildRequestHeaders(url: string) {
+    const headers: Record<string, string> = { ...BROWSER_HEADERS };
+    const cookieHeader = await getBrowserCookieHeader(url);
+    if (cookieHeader) {
+        headers.Cookie = cookieHeader;
+        logVerbose(`Reusing browser cookies for HTTP fetch: ${url}`);
+    }
+
+    return headers;
+}
+
+async function getBrowserCookieHeader(url: string) {
+    if (!browserFetcherPromise) {
+        return undefined;
+    }
+
+    try {
+        const { context } = await browserFetcherPromise;
+        const cookies = await context.cookies(url);
+        if (!cookies.length) {
+            return undefined;
+        }
+
+        return cookies.map((cookie: { name: string, value: string }) => `${cookie.name}=${cookie.value}`).join('; ');
+    } catch (error) {
+        logVerbose(`Unable to read browser cookies for ${url}: ${error instanceof Error ? error.message : String(error)}`);
+        return undefined;
     }
 }
 
@@ -336,21 +415,6 @@ function extractClassAndType(root?: ParentNode | null) {
     };
 }
 
-function extractKiMultiplier(characterDocument: Document) {
-    const primary = characterDocument.querySelector('.righttablecard > table:nth-child(6) > tbody:nth-child(1) > tr:nth-child(2) > td:nth-child(1)')?.innerHTML;
-    if (primary) {
-        const firstEntry = primary.split('â–º ')[1]?.split('<br>')[0];
-        const secondEntry = primary.split('<br>â–º ')[1];
-        if (firstEntry) {
-            return firstEntry
-                .concat(secondEntry ? `; ${secondEntry}` : '')
-                .replace('<a href="/wiki/Super_Attack_Multipliers" title="Super Attack Multipliers">SA Multiplier</a>', 'SA Multiplier');
-        }
-    }
-
-    return characterDocument.querySelector('.righttablecard')?.nextElementSibling?.querySelector('tr:nth-child(2) > td')?.textContent?.split('â–º ')[1] ?? 'Error';
-}
-
 export function extractCharacterData(characterDocument: Document) {
     const parserOutput = characterDocument.querySelector('.mw-parser-output');
     const awakenArrow = parserOutput?.querySelector('img[alt="Arrow"]');
@@ -402,7 +466,7 @@ export function extractCharacterData(characterDocument: Document) {
         maxDefence: parseInt(characterDocument.querySelector('.righttablecard > table:nth-child(3) > tbody:nth-child(1) > tr:nth-child(4) > td:nth-child(3) > center:nth-child(1)')?.textContent ?? 'Error'),
         freeDupeDefence: parseInt(characterDocument.querySelector('.righttablecard > table:nth-child(3) > tbody:nth-child(1) > tr:nth-child(4) > td:nth-child(4) > center:nth-child(1)')?.textContent ?? 'Error'),
         rainbowDefence: parseInt(characterDocument.querySelector('.righttablecard > table:nth-child(3) > tbody:nth-child(1) > tr:nth-child(4) > td:nth-child(5) > center:nth-child(1)')?.textContent ?? 'Error'),
-        kiMultiplier: extractKiMultiplier(characterDocument),
+        kiMultiplier: undefined as unknown as string,
         transformations: transformedCharacterData,
     };
 
