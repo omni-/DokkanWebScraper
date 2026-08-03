@@ -6,13 +6,20 @@ import { Character, Classes, Rarities, Transformation, Types } from './character
 
 const DOKKANSTATS_BASE_URL = 'https://dokkanstats.com';
 const DOKKANSTATS_ASSET_BASE_URL = 'https://assets.dokkanstats.com/assets/global/en';
-const MAX_CHARACTERS_URL = `${DOKKANSTATS_BASE_URL}/en/maxcharacters.json`;
-const CARD_API_URL = `${DOKKANSTATS_BASE_URL}/api/kv/en/cards`;
+// Both endpoints moved under /api/data in 2026. The old ones don't fail loudly: /api/kv/en/cards
+// 404s per card, and /en/maxcharacters.json still returns 200 but stopped being updated in June,
+// so the scrape silently missed every LR released after that.
+const MAX_CHARACTERS_URL = `${DOKKANSTATS_BASE_URL}/api/data/en/allcharacters`;
+const CARD_API_URL = `${DOKKANSTATS_BASE_URL}/api/data/en/cards`;
 const DEFAULT_CONCURRENCY = parseInt(process.env.DOKKANSTATS_CONCURRENCY ?? '4', 10);
 const MAX_RETRIES = parseInt(process.env.DOKKANSTATS_MAX_RETRIES ?? '5', 10);
 const RETRY_BASE_DELAY_MS = parseInt(process.env.DOKKANSTATS_RETRY_BASE_DELAY_MS ?? '1000', 10);
 const RETRY_MAX_DELAY_MS = parseInt(process.env.DOKKANSTATS_RETRY_MAX_DELAY_MS ?? '30000', 10);
 const FORBIDDEN_RETRY_DELAY_MS = parseInt(process.env.DOKKANSTATS_403_RETRY_DELAY_MS ?? '5000', 10);
+// A retired index endpoint keeps returning 200 with data that just stops growing, which is
+// indistinguishable from a good scrape until someone notices a missing unit months later.
+// Dokkan ships new URs/LRs most months, so a quiet index is a broken index.
+const MAX_INDEX_AGE_DAYS = parseInt(process.env.DOKKANSTATS_MAX_INDEX_AGE_DAYS ?? '60', 10);
 const OUTPUT_ROOT = process.cwd();
 const THUMB_DIRECTORY = resolve(OUTPUT_ROOT, 'data/images/thumbs');
 const REQUEST_HEADERS = {
@@ -25,6 +32,8 @@ interface DokkanStatsIndexCharacter {
     id: number;
     lv_max?: number;
     rarity: string;
+    /** e.g. "2026-07-29 05:00:00" */
+    release_date?: string | null;
 }
 
 interface DokkanStatsNamedValue {
@@ -110,6 +119,9 @@ interface DokkanStatsAwakeningRoute {
 
 export async function getDokkanStatsData() {
     const indexCharacters = await fetchJson<DokkanStatsIndexCharacter[]>(MAX_CHARACTERS_URL);
+
+    assertIndexIsFresh(indexCharacters);
+
     const characterIds = indexCharacters
         .filter(isScrapableCharacterSummary)
         .map(character => character.id);
@@ -409,8 +421,57 @@ function isLegendaryRare(character: { rarity?: string }) {
     return character.rarity === Rarities.LR;
 }
 
+/**
+ * Throws when the newest release in the index is older than MAX_INDEX_AGE_DAYS, which means the
+ * endpoint has been retired and is serving a frozen snapshot rather than that nothing shipped.
+ * Runs before any card is fetched so a dead endpoint fails in seconds instead of an hour.
+ */
+export function assertIndexIsFresh(indexCharacters: DokkanStatsIndexCharacter[], now = new Date()) {
+    const newest = getNewestReleaseDate(indexCharacters);
+
+    if (newest == null) {
+        throw new Error(`${MAX_CHARACTERS_URL} returned no usable release dates. The endpoint has probably changed shape.`);
+    }
+
+    const ageInDays = Math.floor((now.getTime() - newest.getTime()) / (1000 * 60 * 60 * 24));
+
+    if (ageInDays > MAX_INDEX_AGE_DAYS) {
+        throw new Error(
+            `${MAX_CHARACTERS_URL} looks stale: its newest release is ${newest.toISOString().slice(0, 10)}, `
+            + `${ageInDays} days ago (limit ${MAX_INDEX_AGE_DAYS}). DokkanStats has most likely moved the index `
+            + 'endpoint again - check what the site fetches on a card page. Set DOKKANSTATS_MAX_INDEX_AGE_DAYS '
+            + 'to override if the game really has gone quiet.');
+    }
+
+    console.log(`Index looks current: newest release ${newest.toISOString().slice(0, 10)} (${ageInDays} days ago)`);
+}
+
+function getNewestReleaseDate(indexCharacters: DokkanStatsIndexCharacter[]) {
+    const timestamps = indexCharacters
+        .map(character => parseReleaseDate(character.release_date))
+        .filter((value): value is number => value != null);
+
+    return timestamps.length === 0 ? null : new Date(Math.max(...timestamps));
+}
+
+// "2026-07-29 05:00:00" is not something Date.parse handles portably; treat it as UTC.
+function parseReleaseDate(value?: string | null) {
+    if (!value) return null;
+
+    const parsed = Date.parse(`${value.trim().replace(' ', 'T')}Z`);
+
+    return Number.isNaN(parsed) ? null : parsed;
+}
+
 function isScrapableCharacterSummary(character: DokkanStatsIndexCharacter) {
-    return isSupportedRarity(character.rarity) && hasScrapableMaxLevel(character);
+    return isSupportedRarity(character.rarity) && hasScrapableMaxLevel(character) && isStandaloneCard(character);
+}
+
+// Cards in the 4xxxxxx range are transformed battle forms, not units you can field directly.
+// They already ride along inside their base card's `transformations`, and the old maxcharacters
+// index never listed them; the allcharacters index does, so filter them out here.
+function isStandaloneCard(character: DokkanStatsIndexCharacter) {
+    return character.id < 4000000;
 }
 
 function hasScrapableMaxLevel(character: { lv_max?: number }) {
