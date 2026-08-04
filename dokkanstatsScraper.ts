@@ -102,6 +102,8 @@ interface DokkanStatsCharacter {
     cost?: number;
     eza?: boolean;
     seza?: boolean;
+    /** ATK multiplier at 12 ki, as a percentage. EZA never changes it, so it lives on the card. */
+    ki_multiplier_12?: number;
     transformations?: number[];
     reversible_exchange?: number[];
     giant_ape?: number[];
@@ -334,7 +336,7 @@ async function mapDokkanStatsCharacter(character: DokkanStatsCharacter): Promise
         maxDefence: numberOrNull(basePerformance?.stats_max?.def),
         freeDupeDefence: numberOrNull(basePerformance?.stats_55?.def),
         rainbowDefence: numberOrNull(basePerformance?.stats_100?.def),
-        kiMultiplier: undefined as unknown as string,
+        kiMultiplier: describeKiMultiplier(character),
         transformations,
     };
 }
@@ -512,6 +514,21 @@ function describeActiveSkill(
         .filter((description): description is string => Boolean(description));
 
     return descriptions.length ? descriptions.join('\n') : undefined;
+}
+
+/**
+ * Keeps the wiki scraper's wording so downstream consumers see the same shape. Only the 12 ki
+ * value is sourced - the 24 ki multiplier every LR quotes is a flat 200%, so it isn't in the API.
+ */
+function describeKiMultiplier(character: DokkanStatsCharacter) {
+    const kiMultiplier = character.ki_multiplier_12;
+
+    if (typeof kiMultiplier !== 'number' || !Number.isFinite(kiMultiplier)) {
+        console.warn(`No ki_multiplier_12 on DokkanStats character ${character.id}; leaving kiMultiplier unset.`);
+        return null as unknown as string;
+    }
+
+    return `12 Ki Multiplier is ${kiMultiplier}%`;
 }
 
 function describePassive(passive?: DokkanStatsPassiveSkill, fallback = 'Error') {
