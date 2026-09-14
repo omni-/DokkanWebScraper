@@ -415,26 +415,42 @@ export async function listEventStages(eventId: number, acquire = fetchDocument) 
  * Every enemy in every stage of an event, with its skills resolved to text. This is what a stage
  * tier is judged on - see the skill's tiering reference.
  */
-export async function fetchEventBosses(eventId: number): Promise<EventBosses> {
-    const stageRefs = await listEventStages(eventId);
+export async function fetchEventBosses(
+    eventId: number,
+    acquireDocument = fetchDocument,
+    acquireJson = fetchDokkanDbJson,
+): Promise<EventBosses> {
+    const stageRefs = await listEventStages(eventId, acquireDocument);
     const stats = await mapWithConcurrency(stageRefs, DEFAULT_CONCURRENCY, async (stage, index) => {
         console.error(`Fetching stage ${index + 1}/${stageRefs.length}: ${stage.id} (${stage.name})`);
 
         const rows = await requestWithRetry(
             `GET event-stats ${stage.id}`,
-            () => fetchDokkanDbJson<DokkanDbEventStats[]>(`event-stats?code=${eventId}&code2=${stage.id}`),
+            () => acquireJson<DokkanDbEventStats[]>(`event-stats?code=${eventId}&code2=${stage.id}`),
         );
 
-        return rows?.[0] ?? null;
+        if (!Array.isArray(rows) || !rows[0]) {
+            throw new Error(`Stage ${stage.id}: missing DokkanDB event stats`);
+        }
+        return rows[0];
     });
 
-    const enemyInfos = stats.map(row => parseEnemyInfo(row?.enemy_info));
+    const enemyInfos = stats.map((row, index) => parseEnemyInfo(row.enemy_info, stageRefs[index].id));
 
     // One round trip each for the whole event rather than one per round.
     const rounds = enemyInfos.flatMap(info => info.battles?.flatMap(battle => battle.rounds ?? []) ?? []);
     const enemies = rounds.flatMap(round => round.enemies ?? []);
-    const skills = await fetchEnemySkills(enemies.flatMap(enemy => enemy.enemy_skill_ids ?? []));
-    const names = await fetchEnemyNames(enemies.map(enemy => enemy.card_id));
+    const skills = await fetchEnemySkills(enemies.flatMap(enemy => enemy.enemy_skill_ids ?? []), acquireJson);
+    for (const [index, info] of enemyInfos.entries()) {
+        for (const battle of info.battles) for (const round of battle.rounds) for (const enemy of round.enemies) {
+            for (const id of enemy.enemy_skill_ids ?? []) {
+                if (!skills.get(id)?.description) {
+                    throw new Error(`Stage ${stageRefs[index].id}: unresolved enemy skill ${id}`);
+                }
+            }
+        }
+    }
+    const names = await fetchEnemyNames(enemies.map(enemy => enemy.card_id), acquireJson);
 
     return {
         eventId,
@@ -451,16 +467,15 @@ export async function fetchEventBosses(eventId: number): Promise<EventBosses> {
                     cardId: enemy.card_id,
                     name: names.get(enemy.card_id) ?? '',
                     skills: (enemy.enemy_skill_ids ?? [])
-                        .map(id => skills.get(id))
-                        .filter((skill): skill is EnemySkill => skill != null),
+                        .map(id => skills.get(id)!),
                 })),
             })),
         })),
     };
 }
 
-async function fetchEnemySkills(ids: number[]) {
-    const rows = await fetchDokkanDbByIds<DokkanDbSkill>('enemy-skills-by-ids', ids);
+async function fetchEnemySkills(ids: number[], acquireJson: typeof fetchDokkanDbJson) {
+    const rows = await fetchDokkanDbByIds<DokkanDbSkill>('enemy-skills-by-ids', ids, acquireJson);
     const skills = new Map<number, EnemySkill>();
 
     for (const row of rows) {
@@ -478,8 +493,8 @@ async function fetchEnemySkills(ids: number[]) {
     return skills;
 }
 
-async function fetchEnemyNames(ids: number[]) {
-    const rows = await fetchDokkanDbByIds<DokkanDbCard>('cards-by-ids', ids);
+async function fetchEnemyNames(ids: number[], acquireJson: typeof fetchDokkanDbJson) {
+    const rows = await fetchDokkanDbByIds<DokkanDbCard>('cards-by-ids', ids, acquireJson);
 
     return new Map(rows.map(row => [row.id, (row.name ?? '').trim()]));
 }
@@ -505,18 +520,27 @@ function collapse(value?: string | null) {
     return (value ?? '').replace(/\s*\n\s*/g, ' ').trim();
 }
 
-function parseEnemyInfo(raw?: string): DokkanDbEnemyInfo {
-    if (!raw) return {};
-
+function parseEnemyInfo(raw: string | undefined, stageId: number): DokkanDbEnemyInfo {
+    let info: DokkanDbEnemyInfo;
     try {
-        return JSON.parse(raw) as DokkanDbEnemyInfo;
+        info = JSON.parse(raw);
     } catch (error) {
-        console.error(`Could not parse enemy_info: ${describeError(error)}`);
-        return {};
+        throw new Error(`Stage ${stageId}: invalid enemy_info JSON: ${describeError(error)}`);
     }
+    const nonempty = (value: unknown) => Array.isArray(value) && value.length > 0;
+    const validId = (id: unknown) => Number.isSafeInteger(id) && Number(id) > 0;
+    if (!info || !nonempty(info.battles) || info.battles.some(battle =>
+        !battle || !nonempty(battle.rounds) || battle.rounds.some(round =>
+            !round || !nonempty(round.enemies) || round.enemies.some(enemy =>
+                !enemy || !validId(enemy.card_id) || !Array.isArray(enemy.enemy_skill_ids) ||
+                    !enemy.enemy_skill_ids.every(validId)
+            )
+        )
+    )) throw new Error(`Stage ${stageId}: missing or malformed enemy_info battles, rounds or enemies`);
+    return info;
 }
 
-async function fetchDokkanDbByIds<T>(endpoint: string, ids: number[]) {
+async function fetchDokkanDbByIds<T>(endpoint: string, ids: number[], acquireJson: typeof fetchDokkanDbJson) {
     const unique = [...new Set(ids.filter(id => Number.isFinite(id)))];
     const rows: T[] = [];
 
@@ -525,10 +549,11 @@ async function fetchDokkanDbByIds<T>(endpoint: string, ids: number[]) {
         const chunk = unique.slice(i, i + 100);
         const batch = await requestWithRetry(
             `GET ${endpoint} (${chunk.length} ids)`,
-            () => fetchDokkanDbJson<T[]>(`${endpoint}?ids=${chunk.join(',')}`),
+            () => acquireJson<T[]>(`${endpoint}?ids=${chunk.join(',')}`),
         );
 
-        if (batch) rows.push(...batch);
+        if (!Array.isArray(batch)) throw new Error(`${endpoint}: expected an array of results`);
+        rows.push(...batch);
     }
 
     return rows;

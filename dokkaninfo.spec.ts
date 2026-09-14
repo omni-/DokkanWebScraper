@@ -1,7 +1,7 @@
 import { equal, deepStrictEqual, throws, rejects } from 'assert';
 import { JSDOM } from 'jsdom';
 import { describe, it } from 'mocha';
-import { listBannerUrl, parseEventDirectory, parseEventStages, exportStageMetadata, listEventStages } from './dokkaninfo';
+import { listBannerUrl, parseEventDirectory, parseEventStages, exportStageMetadata, listEventStages, fetchEventBosses } from './dokkaninfo';
 
 describe('DokkanInfo event assets', function () {
     it('uses the 500x110 event-list button asset', function () {
@@ -34,6 +34,48 @@ const fixture = `<section><div><b>Level 7:</b> Goku &amp; Vegeta
 <section><div>Level 9: Next</div><a href="/events/challenge/701/7010095">SUPER</a></section>
 <div hidden>Level 100: debug</div>`;
 const directory = () => parseEventDirectory(doc(`<events v-bind:eventjson='[{"id":701,"name":"A &amp; B"}]'></events>`));
+
+describe('DokkanDB boss completeness (offline)', () => {
+    const enemyInfo = (ids: number[] = [42]) => JSON.stringify({ battles: [
+        { rounds: [{ round_no: 1, enemies: [{ card_id: 123, enemy_skill_ids: ids }] }] },
+    ] });
+    const acquireDocument = async () => doc('<div>Level 1: Boss</div><a href="/events/challenge/701/7010015">SUPER</a>');
+    async function fetchBosses(rows: unknown, skillRows = [{ id: 42, description: 'Dodges attacks' }]) {
+        return fetchEventBosses(701, acquireDocument, async <T>(path: string): Promise<T> => {
+            if (path.startsWith('event-stats?')) return rows as T;
+            if (path.startsWith('enemy-skills-by-ids?')) return skillRows as T;
+            if (path.startsWith('cards-by-ids?')) return [{ id: 123, name: 'Boss' }] as T;
+            throw new Error(`Unexpected request: ${path}`);
+        });
+    }
+
+    it('rejects absent stage stats and malformed or empty enemy data', async () => {
+        for (const rows of [[], null, {}]) {
+            await rejects(fetchBosses(rows), /Stage 7010015: missing DokkanDB event stats/);
+        }
+        for (const raw of [undefined, '', '{', 'null', '{}', '{"battles":[]}',
+            '{"battles":[{"rounds":[]}]}', '{"battles":[{"rounds":[{"enemies":[]}]}]}',
+            '{"battles":[{"rounds":[{"enemies":[{"card_id":123}]}]}]}',
+            '{"battles":[{"rounds":[{"enemies":[{"card_id":123,"enemy_skill_ids":"42"}]}]}]}']) {
+            await rejects(fetchBosses([{ enemy_info: raw }]), /Stage 7010015: .*enemy_info/);
+        }
+    });
+
+    it('rejects unresolved skills, including partial and textless responses', async () => {
+        for (const skills of [[], [{ id: 42, description: 'Dodges attacks' }],
+            [{ id: 42, description: 'Dodges attacks' }, { id: 43, description: '' }]]) {
+            await rejects(fetchBosses([{ enemy_info: enemyInfo([42, 43]) }], skills), /Stage 7010015: unresolved enemy skill/);
+        }
+        await rejects(fetchBosses([{ enemy_info: enemyInfo() }], null), /enemy-skills-by-ids: expected an array/);
+    });
+
+    it('retains resolved skills and permits enemies with an explicitly empty skill list', async () => {
+        const result = await fetchBosses([{ name: 'Event', enemy_info: enemyInfo() }]);
+        equal(result.stages[0].rounds[0].enemies[0].skills[0].description, 'Dodges attacks');
+        const noSkills = await fetchBosses([{ enemy_info: enemyInfo([]) }]);
+        deepStrictEqual(noSkills.stages[0].rounds[0].enemies[0].skills, []);
+    });
+});
 
 describe('Dokkan Info stage metadata (offline)', () => {
     it('decodes directory entities and rejects malformed, empty and duplicate directories', () => {
