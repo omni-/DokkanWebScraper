@@ -1,9 +1,10 @@
 # DokkanWebScraper
-Scrapes the Dokkan Wiki to build a database of characters etc
+Character data comes from DokkanStats; Dokkan Info supplies card obtainment and event/stage
+metadata. DokkanDB supplies boss skills. The character JSON contract in `character.ts` is retained.
+Node 20+ and curl on PATH are required. Install with `npm ci`.
 
-## NEW METHOD
-Fandom wiki added CloudFlare protection, bricking the old scraper. It's updated to get around CloudFlare, but spawns a ton of headless Edge instances to do it. Yucky.
-Run the new scraper with the following command to instead invoke the DokkanStats api for json and scrape them for image thumbnails which are then downloaded. 
+## Character data
+The default `npm run run` and explicit `npm run run:dokkanstats` both use DokkanStats.
 ```
 npm run run:dokkanstats
 ```
@@ -45,15 +46,37 @@ say nothing about difficulty - pass `--all-skills` to keep them. Per-phase HP/AT
 attack damage are not available from the API at all; each stage carries a `url` to the DokkanDB
 page that renders them.
 
-## OLD METHOD
-### Run locally
-```
-npm run run
+## Structured stage export
+
+```bash
+npm run run:dokkaninfo -- stage-metadata --out <scratch>/stage-metadata.json
+# Optional explicit selection (unknown IDs fail):
+npm run run:dokkaninfo -- stage-metadata --ids 701,1769 --out <scratch>/selected.json
+# From DokkanDaily:
+python scripts/sync-stage-links.py --metadata <scratch>/stage-metadata.json --dry-run
 ```
 
-Output goes to `./data/{currentDate}DokkanCharacterData.json`
+The export is `{ "schemaVersion": 1, "events": [...] }`. Each event contains `id`, `title`,
+`sourceUrl`, and `stages`. Each stage contains its visible `number`, decoded `title`, and
+`destinations: [{ "id": 7010075, "url": "https://dokkaninfo.com/events/challenge/701/7010075" }]`.
+Numbers may have gaps. Every unique difficulty destination is retained; unrelated hosts/events
+are excluded. Missing headings, destinations, conflicting titles, unknown selections and fetch
+failures abort the entire export before replacing the output. Without `--ids`, all challenge
+events are required. Export files belong in an external scratch directory.
 
-### Test 
+Daily owns active catalog matching, overrides, difficulty link selection, links and OCR alias
+catalogs. Its character importer and `dokkan_calc.py` also stay in Daily. `bosses` uses the same
+stage mapping and requests every difficulty ID, retaining its visible level and title.
+
+## Build and validation
+
+```bash
+npm run build
+npm test
 ```
-npm run test
-```
+
+Tests are offline and do not run a character scrape. `lib/` is untracked generated output;
+each build deletes it before compiling sources and declarations. The package entry point is
+a side-effect-free library exporting character types and supported adapters. Legacy Fandom
+APIs are removed; `npm run run` now uses DokkanStats. CI validates builds/tests and does not
+publish to npm. No existing npm release is changed by this repository cleanup.

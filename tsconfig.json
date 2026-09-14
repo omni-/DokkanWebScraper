@@ -5,6 +5,15 @@
     "outDir": "lib",
     "rootDir": ".",
     "sourceMap": true,
-    "strict": false
-  }
+    "strict": false,
+    "declaration": true
+  },
+  "include": [
+    "*.ts"
+  ],
+  "exclude": [
+    "*.spec.ts",
+    "lib",
+    "node_modules"
+  ]
 }

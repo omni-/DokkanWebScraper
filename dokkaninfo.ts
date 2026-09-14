@@ -1,6 +1,6 @@
 import { execFile } from 'child_process';
 import { existsSync, mkdirSync } from 'fs';
-import { writeFile } from 'fs/promises';
+import { writeFile, rename, rm } from 'fs/promises';
 import { JSDOM } from 'jsdom';
 import { dirname, resolve } from 'path';
 import { promisify } from 'util';
@@ -261,10 +261,21 @@ export async function fetchCardMetas(ids: number[], concurrency = DEFAULT_CONCUR
  */
 export async function listChallengeEventSummaries(): Promise<ChallengeEventSummary[]> {
     const document = await fetchDocument(`${BASE_URL}/events/challenge`);
-    const areas = readComponentProp<DokkanInfoEventArea[]>(document, 'events', 'v-bind:eventjson') ?? [];
+    return parseEventDirectory(document);
+}
+
+export function parseEventDirectory(document: Document): ChallengeEventSummary[] {
+    const areas = readComponentProp<DokkanInfoEventArea[]>(document, 'events', 'v-bind:eventjson');
+    if (!Array.isArray(areas) || !areas.length) throw new Error('Malformed or empty Dokkan Info event directory');
+    const ids = new Set<number>();
+    for (const area of areas) {
+        if (!area || !Number.isSafeInteger(area.id) || area.id <= 0 || typeof area.name !== 'string' || !area.name.trim() || ids.has(area.id)) {
+            throw new Error('Invalid or duplicate event in Dokkan Info directory');
+        }
+        ids.add(area.id);
+    }
 
     return areas
-        .filter(area => Number.isFinite(area.id))
         .map(area => ({
             id: area.id,
             name: (area.name ?? '').replace(/\s+/g, ' ').trim(),
@@ -280,7 +291,7 @@ export async function fetchChallengeEvent(id: number, summary?: ChallengeEventSu
     const url = `${BASE_URL}/events/challenge/${id}`;
     const document = await fetchDocument(url);
 
-    const stageNames = extractStageNames(document);
+    const stageNames = parseEventStages(document, id).map(stage => stage.title);
     const missionCategory = readComponentProp<DokkanInfoMissionCategory>(document, 'mission-category', 'v-bind:missioncategory');
     const endsAt = getLatestMissionEnd(missionCategory);
 
@@ -302,44 +313,102 @@ export async function listChallengeEvents(options: { since?: number; concurrency
 
     const events = await mapWithConcurrency(summaries, options.concurrency ?? DEFAULT_CONCURRENCY, async (summary, index) => {
         console.error(`Fetching challenge event ${index + 1}/${summaries.length}: ${summary.id} (${summary.name})`);
-        try {
-            return await fetchChallengeEvent(summary.id, summary);
-        } catch (error) {
-            console.error(`Failed to fetch challenge event ${summary.id}: ${describeError(error)}`);
-            return null;
-        }
+        return await fetchChallengeEvent(summary.id, summary);
     });
 
-    return events.filter((event): event is ChallengeEvent => event != null);
+    return events;
 }
 
 /**
  * Stage ids for an event, read off the links on its dokkaninfo page. They also appear in a hidden
  * debug div, but the hrefs are the part of the page that has to keep working.
  */
-export async function listEventStages(eventId: number) {
-    const document = await fetchDocument(`${BASE_URL}/events/challenge/${eventId}`);
-    const headings = extractStageHeadings(document);
+export interface StageMetadata {
+    number: number;
+    title: string;
+    destinations: { id: number; url: string }[];
+}
 
-    const ids: number[] = [];
-    const pattern = new RegExp(`/events/challenge/${eventId}/(\\d+)\\b`);
+export interface EventMetadata {
+    id: number;
+    title: string;
+    sourceUrl: string;
+    stages: StageMetadata[];
+}
 
-    for (const anchor of document.querySelectorAll('a[href]')) {
-        const match = pattern.exec(anchor.getAttribute('href') ?? '');
-        const id = match ? parseInt(match[1], 10) : NaN;
+export interface StageMetadataExport {
+    schemaVersion: 1;
+    events: EventMetadata[];
+}
 
-        if (Number.isFinite(id) && !ids.includes(id)) ids.push(id);
+/** Walk visible headings and following links in DOM order; never infer levels from IDs or position. */
+export function parseEventStages(document: Document, eventId: number): StageMetadata[] {
+    const stages = new Map<number, StageMetadata>();
+    const owners = new Map<number, number>();
+    let current: StageMetadata | undefined;
+    let scope: Element | undefined;
+    const visible = (element: Element) => !element.closest('script,style,template,[hidden],[aria-hidden="true"],[style*="display:none"],[style*="display: none"]');
+    const text = (element: Element) => (element.textContent ?? '').replace(/\s+/g, ' ').trim();
+    const heading = (element: Element) => /^(DIV|H[1-6]|P|HEADER)$/.test(element.tagName) ? /^Level (\d+):\s*(.*)$/.exec(text(element)) : null;
+    for (const element of Array.from(document.querySelectorAll('*')) as Element[]) {
+        if (!visible(element)) continue;
+        // Select the smallest heading container, including inline title markup, but not a stage wrapper.
+        const match = heading(element);
+        const headingContainer = /^(DIV|H[1-6]|P|HEADER)$/.test(element.tagName) && !element.querySelector('a[href]')
+            && !Array.from(element.children).some(child => heading(child));
+        if (headingContainer && /^Level\b/.test(text(element)) && !match) throw new Error(`Event ${eventId}: malformed stage heading`);
+        if (match && headingContainer) {
+            const number = Number(match[1]);
+            const title = match[2];
+            if (!Number.isSafeInteger(number) || number <= 0 || !title) throw new Error(`Event ${eventId}: invalid stage heading`);
+            const previous = stages.get(number);
+            if (previous && previous.title !== title) throw new Error(`Event ${eventId}: conflicting titles for level ${number}`);
+            current = previous ?? { number, title, destinations: [] };
+            stages.set(number, current);
+            scope = element.parentElement;
+            while (scope && !scope.querySelector('a[href]')) scope = scope.parentElement;
+        }
+        if (element.tagName !== 'A') continue;
+        let url: URL;
+        try { url = new URL(element.getAttribute('href') ?? '', BASE_URL); } catch { continue; }
+        if (url.origin !== BASE_URL || url.username || url.password) continue;
+        const destination = new RegExp(`^/events/challenge/${eventId}/(\\d+)$`).exec(url.pathname);
+        if (!destination || url.search || url.hash) continue;
+        const id = Number(destination[1]);
+        if (!current || !scope?.contains(element) || !Number.isSafeInteger(id) || id <= 0) throw new Error(`Event ${eventId}: stage destination without a valid heading`);
+        if (owners.has(id) && owners.get(id) !== current.number) throw new Error(`Event ${eventId}: destination belongs to multiple levels`);
+        owners.set(id, current.number);
+        if (!current.destinations.some(x => x.id === id)) current.destinations.push({ id, url: url.href });
     }
-
-    if (ids.length !== headings.length) {
-        console.error(`Event ${eventId}: found ${ids.length} stage link(s) but ${headings.length} "Level N:" heading(s); pairing by position.`);
+    if (!stages.size || [...stages.values()].some(stage => !stage.destinations.length)) {
+        throw new Error(`Event ${eventId}: missing numbered stages or destinations`);
     }
+    return [...stages.values()].sort((a, b) => a.number - b.number);
+}
 
-    return ids.map((id, index) => ({
-        id,
-        level: headings[index]?.level ?? index + 1,
-        name: headings[index]?.name ?? `Stage ${index + 1}`,
+/** All requested events must succeed before any export is emitted. Injectable acquisition supports offline tests. */
+export async function exportStageMetadata(
+    ids?: number[],
+    directory = listChallengeEventSummaries,
+    acquire = fetchDocument,
+): Promise<StageMetadataExport> {
+    const summaries = await directory();
+    const selected = ids ? summaries.filter(event => ids.includes(event.id)) : summaries;
+    if (!selected.length || (ids && new Set(ids).size !== selected.length)) throw new Error('Unknown or empty event selection');
+    const events = await mapWithConcurrency(selected, DEFAULT_CONCURRENCY, async event => ({
+        id: event.id,
+        title: event.name,
+        sourceUrl: event.url,
+        stages: parseEventStages(await acquire(event.url), event.id),
     }));
+    return { schemaVersion: 1, events };
+}
+
+export async function listEventStages(eventId: number, acquire = fetchDocument) {
+    const document = await acquire(`${BASE_URL}/events/challenge/${eventId}`);
+    return parseEventStages(document, eventId).flatMap(stage => stage.destinations.map(destination => ({
+        id: destination.id, level: stage.number, name: stage.title,
+    })));
 }
 
 /**
@@ -513,25 +582,6 @@ function extractEventName(document: Document) {
     return title.replace(/\s*\|\s*Dokkan Info!?\s*$/i, '').trim();
 }
 
-function extractStageNames(document: Document) {
-    return extractStageHeadings(document).map(heading => heading.name);
-}
-
-function extractStageHeadings(document: Document) {
-    const headings: { level: number; name: string }[] = [];
-
-    for (const element of document.querySelectorAll('div')) {
-        if (element.children.length > 0) continue;
-
-        const text = (element.textContent ?? '').replace(/\s+/g, ' ').trim();
-        const match = /^Level (\d+):\s*(.*)$/.exec(text);
-
-        if (match) headings.push({ level: parseInt(match[1], 10), name: match[2].trim() });
-    }
-
-    return headings;
-}
-
 function getLatestMissionEnd(missionCategory?: DokkanInfoMissionCategory | null) {
     const ends = (missionCategory?.missions ?? [])
         .map(mission => mission.end_at)
@@ -669,16 +719,24 @@ async function emit(data: unknown, outPath?: string) {
     }
 
     ensureDirectory(dirname(resolve(outPath)));
-    await writeFile(resolve(outPath), json, { encoding: 'utf8' });
+    const temporary = `${resolve(outPath)}.${process.pid}.tmp`;
+    try {
+        await writeFile(temporary, json, { encoding: 'utf8' });
+        await rename(temporary, resolve(outPath));
+    } finally {
+        await rm(temporary, { force: true });
+    }
     console.error(`Wrote ${outPath}`);
 }
 
 const USAGE = `Usage:
   npm run run:dokkaninfo -- cards --ids 1033821,1034221 [--out data/cardMeta.json]
+  npm run run:dokkaninfo -- stage-metadata [--ids 1769,701] --out <scratch>/stages.json
   npm run run:dokkaninfo -- events [--since 1700] [--permanent-only] [--out data/challengeEvents.json]
   npm run run:dokkaninfo -- event-images --id 1766 --out <directory>
   npm run run:dokkaninfo -- bosses --id 1766 [--all-skills] [--out data/bosses.json]
 
+  stage-metadata Exports versioned visible stage titles/numbers and every difficulty destination.
   cards         Classifies cards as premium (summon-only) or free-to-play.
   events        Lists challenge events with stage counts and whether they are permanent.
   event-images  Downloads banner.png + wall.png for one event into <directory>.
@@ -715,6 +773,12 @@ async function main() {
             if (ids.length === 0) throw new Error('cards requires --ids with at least one card id');
 
             await emit(await fetchCardMetas(ids), args.out);
+            break;
+        }
+        case 'stage-metadata': {
+            const ids = args.ids?.split(',').map(Number);
+            if (ids && ids.some(id => !Number.isSafeInteger(id) || id <= 0)) throw new Error('Invalid --ids');
+            await emit(await exportStageMetadata(ids), args.out);
             break;
         }
         case 'events': {
