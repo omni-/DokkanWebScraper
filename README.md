@@ -29,10 +29,21 @@ npm run run:dokkaninfo -- events --permanent-only --out data/challengeEvents.jso
 
 # banner.png + wall.png for one event, sized exactly as DokkanDaily expects
 npm run run:dokkaninfo -- event-images --id 1766 --out ../DokkanDaily/src/DokkanDaily/wwwroot/images/events/SMB_RE_DAIMA
+
+# Enemy skills for every stage of one event, for deciding how hard it is
+npm run run:dokkaninfo -- bosses --id 1766 --out data/bosses.json
 ```
 
 dokkaninfo.com sits behind CloudFlare, which blocks Node's TLS fingerprint no matter what headers
 you send, so these commands shell out to `curl`.
+
+`bosses` is the odd one out: dokkaninfo knows which stages an event has but nothing about the
+enemies in them, so it takes the stage ids from there and everything else from DokkanDB's API. It
+drops the four skills every Red Zone / Supreme Magnificent Battle boss shares (reduces damage
+received, stun immunity, disables ATK & DEF reduction, nullifies Super Attack sealing) since they
+say nothing about difficulty - pass `--all-skills` to keep them. Per-phase HP/ATK/DEF and super
+attack damage are not available from the API at all; each stage carries a `url` to the DokkanDB
+page that renders them.
 
 ## OLD METHOD
 ### Run locally
