@@ -16,6 +16,10 @@ const MAX_RETRIES = parseInt(process.env.DOKKANSTATS_MAX_RETRIES ?? '5', 10);
 const RETRY_BASE_DELAY_MS = parseInt(process.env.DOKKANSTATS_RETRY_BASE_DELAY_MS ?? '1000', 10);
 const RETRY_MAX_DELAY_MS = parseInt(process.env.DOKKANSTATS_RETRY_MAX_DELAY_MS ?? '30000', 10);
 const FORBIDDEN_RETRY_DELAY_MS = parseInt(process.env.DOKKANSTATS_403_RETRY_DELAY_MS ?? '5000', 10);
+// 403s get a longer budget than other errors, about five minutes at the default delay. Cloudflare
+// blocks some networks outright (GitHub Actions runners, for one), and an unlimited budget there
+// spins forever.
+const MAX_FORBIDDEN_RETRIES = parseInt(process.env.DOKKANSTATS_MAX_403_RETRIES ?? '60', 10);
 // A retired index endpoint keeps returning 200 with data that just stops growing, which is
 // indistinguishable from a good scrape until someone notices a missing unit months later.
 // Dokkan ships new URs/LRs most months, so a quiet index is a broken index.
@@ -138,6 +142,12 @@ export async function getDokkanStatsData() {
 
             return mapDokkanStatsCharacter(character);
         } catch (error) {
+            // A card that is still forbidden after the full retry budget means DokkanStats is
+            // blocking us, so stop instead of spending that budget again on every other card.
+            if (getAxiosStatus(error) === 403) {
+                throw error;
+            }
+
             console.warn(`Skipping DokkanStats character ${id}: ${describeError(error)}`);
             return null;
         }
@@ -177,6 +187,7 @@ async function fetchJson<T>(url: string): Promise<T> {
 async function requestWithRetry<T>(label: string, request: () => Promise<T>): Promise<T> {
     let lastError: unknown;
     let attempt = 1;
+    let forbiddenAttempt = 1;
 
     while (true) {
         try {
@@ -186,10 +197,15 @@ async function requestWithRetry<T>(label: string, request: () => Promise<T>): Pr
             const status = getAxiosStatus(error);
 
             if (status === 403) {
+                if (forbiddenAttempt > MAX_FORBIDDEN_RETRIES) {
+                    console.error(`${label} was still forbidden (403) after ${MAX_FORBIDDEN_RETRIES} retries. Giving up.`);
+                    break;
+                }
+
                 const delay = getForbiddenRetryDelay();
-                console.warn(`${label} was forbidden (403). Waiting ${delay}ms before retrying.`);
+                console.warn(`${label} was forbidden (403). Waiting ${delay}ms before retrying (${forbiddenAttempt}/${MAX_FORBIDDEN_RETRIES}).`);
                 await sleep(delay);
-                attempt += 1;
+                forbiddenAttempt += 1;
                 continue;
             }
 
@@ -255,11 +271,19 @@ async function mapWithConcurrency<T, TResult>(
 ) {
     const results = new Array<TResult>(items.length);
     let nextIndex = 0;
+    let failed = false;
 
+    // Promise.all rejects on the first failure but can't stop the other workers, so they check
+    // this before taking the next item.
     const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
-        while (nextIndex < items.length) {
+        while (!failed && nextIndex < items.length) {
             const currentIndex = nextIndex++;
-            results[currentIndex] = await mapper(items[currentIndex], currentIndex);
+            try {
+                results[currentIndex] = await mapper(items[currentIndex], currentIndex);
+            } catch (error) {
+                failed = true;
+                throw error;
+            }
         }
     });
 

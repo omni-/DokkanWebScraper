@@ -17,6 +17,10 @@ that is more than 60 days ago. A retired DokkanStats endpoint keeps returning 20
 snapshot instead of failing, so without this check the scrape quietly stops picking up new units.
 If the game genuinely goes quiet for that long, set `DOKKANSTATS_MAX_INDEX_AGE_DAYS` higher.
 
+A 403 is retried every 5 seconds or so, up to `DOKKANSTATS_MAX_403_RETRIES` times (default 60,
+about five minutes). If a request is still forbidden after that, the whole scrape fails instead of
+skipping cards. DokkanStats blocks some networks outright, including GitHub Actions runners.
+
 ### Card + event metadata (Dokkan Info)
 Used when adding new content to DokkanDaily: which new units are premium (summon-only, so they
 belong in the leader list) and which challenge events are permanent (so they can become stages).
