@@ -36,6 +36,8 @@ interface DokkanStatsIndexCharacter {
     cost?: number;
     /** e.g. "2026-07-29 05:00:00" */
     release_date?: string | null;
+    eza_release_date?: string | null;
+    seza_release_date?: string | null;
 }
 
 interface DokkanStatsNamedValue {
@@ -104,7 +106,9 @@ interface DokkanStatsCharacter {
     cost?: number;
     release_date?: string | null;
     eza?: boolean;
+    eza_release_date?: string | null;
     seza?: boolean;
+    seza_release_date?: string | null;
     /** ATK multiplier at 12 ki, as a percentage. EZA never changes it, so it lives on the card. */
     ki_multiplier_12?: number;
     transformations?: number[];
@@ -291,6 +295,8 @@ async function mapDokkanStatsCharacter(
     const isLR = isLegendaryRare(character);
     const cost = character.cost ?? summary?.cost;
     const releaseDate = toReleaseDate(character.release_date ?? summary?.release_date);
+    const ezaReleaseDate = character.eza ? toReleaseDate(character.eza_release_date ?? summary?.eza_release_date) : undefined;
+    const superEzaReleaseDate = character.seza ? toReleaseDate(character.seza_release_date ?? summary?.seza_release_date) : undefined;
 
     return {
         name: cleanName(character.name ?? character.full_name) ?? 'Error',
@@ -303,6 +309,8 @@ async function mapDokkanStatsCharacter(
         ...(typeof cost === 'number' ? { cost } : {}),
         id: character.id,
         ...(releaseDate ? { releaseDate } : {}),
+        ...(ezaReleaseDate ? { ezaReleaseDate } : {}),
+        ...(superEzaReleaseDate ? { superEzaReleaseDate } : {}),
         imageURL,
         leaderSkill: describeSkill(basePerformance?.leader_skill),
         ...(character.eza ? {
@@ -564,7 +572,7 @@ function describePassive(passive?: DokkanStatsPassiveSkill, fallback = 'Error') 
         .map(group => {
             const groupName = cleanText(group.group_name);
             const effects = (group.effects ?? [])
-                .map(effect => cleanText(effect.description))
+                .map(effect => cleanPassiveEffect(effect.description))
                 .filter((description): description is string => Boolean(description));
 
             if (!effects.length) {
@@ -578,9 +586,29 @@ function describePassive(passive?: DokkanStatsPassiveSkill, fallback = 'Error') 
     return descriptions.length ? descriptions.join('\n') : fallback;
 }
 
-function cleanText(value?: string) {
+/**
+ * DokkanStats marks a passive's buffs and debuffs with arrow icons after the value, e.g.
+ * "ATK 200%{passiveImg:up_g}". Turns those into "+200%" and "-70%" so debuffs don't read as buffs
+ * once the icons are stripped.
+ */
+export function signArrowValues(value?: string) {
+    return value
+        ?.replace(/(?<![+\-\d.])(\d+(?:\.\d+)?%?)\{passiveImg:up_[a-z]+}/g, '+$1')
+        .replace(/(?<![+\-\d.])(\d+(?:\.\d+)?%?)\{passiveImg:down_[a-z]+}/g, '-$1');
+}
+
+/**
+ * Cleans one passive effect. Arrow icons become signs, and the once and forever icons, which say an
+ * effect activates once or lasts for the rest of battle, are kept as `{passiveImg:once}` and
+ * `{passiveImg:forever}` for readers to show.
+ */
+export function cleanPassiveEffect(description?: string) {
+    return cleanText(signArrowValues(description), /\{passiveImg:(?!(?:once|forever)})[^}]+}/g);
+}
+
+function cleanText(value?: string, icons = /\{passiveImg:[^}]+}/g) {
     const cleaned = value
-        ?.replace(/\{passiveImg:[^}]+}/g, '')
+        ?.replace(icons, '')
         .replace(/<[^>]+>/g, '')
         .replace(/\r/g, '')
         .replace(/[ \t]*\n[ \t]*/g, ' ')

@@ -10,9 +10,12 @@ npm run run:dokkanstats
 ```
 
 Writes the prettified character JSON to `./data/{currentDate}DokkanCharacterData.json` and
-downloads any missing card thumbs to `./data/images/thumbs/`. Cards include `cost` and
-`releaseDate` (YYYY-MM-DD) when DokkanStats has them, and transformed forms include their own
-`transformedCategories`.
+downloads any missing card thumbs to `./data/images/thumbs/`. Cards include `cost`,
+`releaseDate`, `ezaReleaseDate` and `superEzaReleaseDate` (YYYY-MM-DD) when DokkanStats has
+them, and transformed forms include their own `transformedCategories`. In passives, the game's
+up and down arrow icons become `+` and `-` signs on the value they follow (`DEF -70%`), and the
+icons for effects that activate once or last for the rest of battle stay in the text as
+`{passiveImg:once}` and `{passiveImg:forever}`.
 
 Before fetching anything it checks how recent the newest release in the index is and aborts if
 that is more than 60 days ago. A retired DokkanStats endpoint keeps returning 200 with a frozen
