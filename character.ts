@@ -10,6 +10,10 @@ export interface Character {
     id: string | number,
     /** UTC date the card was first released, as YYYY-MM-DD. */
     releaseDate?: string,
+    /** UTC date of the card's Extreme Z-Awakening, as YYYY-MM-DD. */
+    ezaReleaseDate?: string,
+    /** UTC date of the card's Super Extreme Z-Awakening, as YYYY-MM-DD. */
+    superEzaReleaseDate?: string,
     imageURL: string,
     leaderSkill: string,
     ezaLeaderSkill?: string,
