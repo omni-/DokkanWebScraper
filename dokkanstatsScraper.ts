@@ -32,6 +32,8 @@ interface DokkanStatsIndexCharacter {
     id: number;
     lv_max?: number;
     rarity: string;
+    /** The card endpoint leaves cost out; only the index has it. */
+    cost?: number;
     /** e.g. "2026-07-29 05:00:00" */
     release_date?: string | null;
 }
@@ -100,6 +102,7 @@ interface DokkanStatsCharacter {
     type?: string;
     class?: string;
     cost?: number;
+    release_date?: string | null;
     eza?: boolean;
     seza?: boolean;
     /** ATK multiplier at 12 ki, as a percentage. EZA never changes it, so it lives on the card. */
@@ -124,6 +127,7 @@ export async function getDokkanStatsData() {
 
     assertIndexIsFresh(indexCharacters);
 
+    const summaries = new Map(indexCharacters.map(character => [character.id, character]));
     const characterIds = indexCharacters
         .filter(isScrapableCharacterSummary)
         .map(character => character.id);
@@ -136,7 +140,7 @@ export async function getDokkanStatsData() {
                 return null;
             }
 
-            return mapDokkanStatsCharacter(character);
+            return mapDokkanStatsCharacter(character, summaries.get(id));
         } catch (error) {
             console.warn(`Skipping DokkanStats character ${id}: ${describeError(error)}`);
             return null;
@@ -267,7 +271,10 @@ async function mapWithConcurrency<T, TResult>(
     return results;
 }
 
-async function mapDokkanStatsCharacter(character: DokkanStatsCharacter): Promise<Character | null> {
+async function mapDokkanStatsCharacter(
+    character: DokkanStatsCharacter,
+    summary?: DokkanStatsIndexCharacter,
+): Promise<Character | null> {
     if (!isSupportedRarity(character.rarity)) {
         return null;
     }
@@ -282,6 +289,8 @@ async function mapDokkanStatsCharacter(character: DokkanStatsCharacter): Promise
     const imageURL = await downloadCharacterThumb(character.id);
     const transformations = await mapTransformations(character);
     const isLR = isLegendaryRare(character);
+    const cost = character.cost ?? summary?.cost;
+    const releaseDate = toReleaseDate(character.release_date ?? summary?.release_date);
 
     return {
         name: cleanName(character.name ?? character.full_name) ?? 'Error',
@@ -291,7 +300,9 @@ async function mapDokkanStatsCharacter(character: DokkanStatsCharacter): Promise
         rarity: Rarities[character.rarity as keyof typeof Rarities],
         class: Classes[character.class as keyof typeof Classes],
         type: Types[character.type as keyof typeof Types],
+        ...(typeof cost === 'number' ? { cost } : {}),
         id: character.id,
+        ...(releaseDate ? { releaseDate } : {}),
         imageURL,
         leaderSkill: describeSkill(basePerformance?.leader_skill),
         ...(character.eza ? {
@@ -386,6 +397,7 @@ async function mapTransformedCharacter(character: DokkanStatsCharacter): Promise
         transformedActiveSkill: describeActiveSkill(basePerformance?.active_skill, 'effect_description'),
         transformedActiveSkillCondition: describeActiveSkill(basePerformance?.active_skill, 'condition_description'),
         transformedLinks: (character.links ?? []).map(link => link.name),
+        transformedCategories: (character.categories ?? []).map(category => category.name),
         transformedImageURL: imageURL,
     };
 }
@@ -454,6 +466,12 @@ function getNewestReleaseDate(indexCharacters: DokkanStatsIndexCharacter[]) {
         .filter((value): value is number => value != null);
 
     return timestamps.length === 0 ? null : new Date(Math.max(...timestamps));
+}
+
+/** Turns a DokkanStats release timestamp into a YYYY-MM-DD date, or undefined if it is missing. */
+export function toReleaseDate(value?: string | null) {
+    const parsed = parseReleaseDate(value);
+    return parsed == null ? undefined : new Date(parsed).toISOString().slice(0, 10);
 }
 
 // "2026-07-29 05:00:00" is not something Date.parse handles portably; treat it as UTC.

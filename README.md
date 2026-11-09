@@ -10,7 +10,9 @@ npm run run:dokkanstats
 ```
 
 Writes the prettified character JSON to `./data/{currentDate}DokkanCharacterData.json` and
-downloads any missing card thumbs to `./data/images/thumbs/`.
+downloads any missing card thumbs to `./data/images/thumbs/`. Cards include `cost` and
+`releaseDate` (YYYY-MM-DD) when DokkanStats has them, and transformed forms include their own
+`transformedCategories`.
 
 Before fetching anything it checks how recent the newest release in the index is and aborts if
 that is more than 60 days ago. A retired DokkanStats endpoint keeps returning 200 with a frozen

@@ -8,6 +8,8 @@ export interface Character {
     type: Types,
     cost?: number,
     id: string | number,
+    /** UTC date the card was first released, as YYYY-MM-DD. */
+    releaseDate?: string,
     imageURL: string,
     leaderSkill: string,
     ezaLeaderSkill?: string,
@@ -73,5 +75,6 @@ export interface Transformation {
     transformedActiveSkill?: string,
     transformedActiveSkillCondition?: string,
     transformedLinks:string[],
+    transformedCategories?: string[],
     transformedImageURL: string,
 }
